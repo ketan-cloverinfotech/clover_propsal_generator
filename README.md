@@ -10,14 +10,32 @@ proposal-generator/
 │   └── deploy.yml             # GitHub Actions → Pages deployment
 ├── lib/
 │   ├── docx.umd.js            # docx-js 9.5.1, vendored (no CDN dependency)
-│   └── FileSaver.min.js       # FileSaver 2.0.5, vendored
+│   ├── FileSaver.min.js       # FileSaver 2.0.5, vendored
+│   └── img/
+│       ├── clover-logo.png    # Clover Infotech logo (top-left of cover)
+│       ├── cover-sphere.png   # Wireframe sphere (cover bottom-right)
+│       ├── creators-bg.jpg    # Sculpture (creators page lower section)
+│       ├── company-profile.jpg# Full-page company brand asset
+│       └── footer-accent.png  # Small wireframe in footer
 ├── index.html                 # The whole app (HTML + CSS + JS)
 ├── README.md                  # This file
 ├── .nojekyll                  # Tells Pages to skip Jekyll processing
 └── .gitignore
 ```
 
-Why vendored libs? No CDN means it works on locked-down corporate networks, behind firewalls, and offline. Trade-off: the repo is ~800 KB instead of ~10 KB. Worth it.
+The brand images are extracted from the original Clover proposal docx and matched to its design language (Segoe UI font, navy `#002060` headings, green `#4B9B3B` accents). All assets are vendored — zero CDN dependency.
+
+## ⚠️ Local testing requires a web server
+
+Opening `index.html` by double-click (i.e., via `file://`) **will not work** — the brand images are loaded with `fetch()`, which most browsers block on the `file://` protocol for security. To test locally, serve the folder over HTTP:
+
+```bash
+# From inside the proposal-generator/ folder:
+python3 -m http.server 8000
+# Then open http://localhost:8000/ in your browser
+```
+
+On GitHub Pages this is served via HTTPS, so `fetch()` works without any extra setup.
 
 ---
 

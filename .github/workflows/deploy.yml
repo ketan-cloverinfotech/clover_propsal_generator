@@ -40,7 +40,18 @@ jobs:
       - name: Sanity check required files
         run: |
           set -e
-          for f in index.html lib/docx.umd.js lib/FileSaver.min.js .nojekyll; do
+          REQUIRED=(
+            index.html
+            lib/docx.umd.js
+            lib/FileSaver.min.js
+            lib/img/clover-logo.png
+            lib/img/cover-sphere.png
+            lib/img/creators-bg.jpg
+            lib/img/company-profile.jpg
+            lib/img/footer-accent.png
+            .nojekyll
+          )
+          for f in "${REQUIRED[@]}"; do
             if [ ! -f "$f" ]; then
               echo "::error file=$f::Required file missing: $f"
               exit 1
@@ -49,9 +60,13 @@ jobs:
           echo "✅ All required files present."
           echo "📦 Repo size: $(du -sh . | cut -f1)"
 
-      # 3. Tell GitHub Pages we want to publish from this repo
+      # 3. Tell GitHub Pages we want to publish from this repo.
+      #    enablement: true → if Pages is not yet enabled on the repo, enable it automatically
+      #    on first run. Saves you from doing the Settings → Pages click manually.
       - name: Setup Pages
         uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       # 4. Tarball the whole repo (minus .git) and hand it to Pages.
       #    path: '.' = upload everything from repo root.

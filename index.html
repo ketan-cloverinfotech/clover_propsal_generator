@@ -646,13 +646,37 @@ window.addEventListener('DOMContentLoaded', () => {
 </script>
 
 <!-- ============================================================
-     DOCX GENERATION (uses docx-js UMD: window.docx)
+     DOCX GENERATION — matches original Clover format:
+     - A4 page size, tight margins (matches original)
+     - Segoe UI font family (Light / Regular / Semibold)
+     - Heading colour #002060 (navy), accent #4B9B3B (green)
+     - Embedded brand images: clover logo, cover sphere, creators
+       sculpture, full-page company profile, footer wireframe
      ============================================================ -->
 <script>
-const GREEN = "4B9B3B";
+// Brand palette (raw hex, no # prefix — docx-js convention)
+const NAVY  = "002060"; // primary heading colour (BUSINESS PROPOSAL, Executive Summary, etc.)
+const GREEN = "4B9B3B"; // Clover accent green
+const GREY  = "595959"; // body / footer secondary text
+const ACCENT_YELLOW = "F2A900"; // creators page underline accent
 
-// All docx-js classes will be assigned at generate time, not at script load.
-// This avoids TDZ errors if the CDN fails to load.
+// A4 page dimensions in DXA (1440 = 1 inch). Original proposal is A4.
+const PAGE_W = 11907; // ~8.27"
+const PAGE_H = 16839; // ~11.69"
+// Original margins: top=680, right=851, bottom=1276, left=720 (DXA)
+const MARGIN = { top: 680, right: 851, bottom: 1276, left: 720, header: 0, footer: 38 };
+const CONTENT_W = PAGE_W - MARGIN.left - MARGIN.right; // = 10336
+
+// Brand image paths (loaded at generate-time via fetch)
+const IMG_PATHS = {
+  cloverLogo:    "lib/img/clover-logo.png",
+  coverSphere:   "lib/img/cover-sphere.png",
+  creatorsBg:    "lib/img/creators-bg.jpg",
+  companyProfile:"lib/img/company-profile.jpg",
+  footerAccent:  "lib/img/footer-accent.png",
+};
+
+// docx-js classes — bound at generate time so missing CDN gives a clear error, not TDZ
 let Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType,
     Table, TableRow, TableCell, WidthType, BorderStyle, ShadingType,
     Header, Footer, PageNumber, LevelFormat, PageBreak, ImageRun;
@@ -660,84 +684,104 @@ let BORDER, TBL_BORDERS;
 
 function bindDocxLib() {
   if (!window.docx) {
-    throw new Error("docx library not loaded. Check your internet connection or the CDN URL in index.html.");
+    throw new Error("docx library not loaded. Make sure lib/docx.umd.js is present.");
   }
   ({ Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType,
      Table, TableRow, TableCell, WidthType, BorderStyle, ShadingType,
      Header, Footer, PageNumber, LevelFormat, PageBreak, ImageRun } = window.docx);
-
   BORDER = { style: BorderStyle.SINGLE, size: 4, color: "CCCCCC" };
-  TBL_BORDERS = { top: BORDER, bottom: BORDER, left: BORDER, right: BORDER, insideHorizontal: BORDER, insideVertical: BORDER };
+  TBL_BORDERS = { top: BORDER, bottom: BORDER, left: BORDER, right: BORDER,
+                  insideHorizontal: BORDER, insideVertical: BORDER };
 }
 
-// Surface a friendly warning at page load if the CDN script never made it.
 window.addEventListener('load', () => {
   if (!window.docx) {
-    setStatus("⚠ docx library failed to load from CDN. Document generation will not work until you fix the script tag in index.html.", 'error');
+    setStatus("⚠ docx library failed to load. Make sure lib/docx.umd.js exists.", 'error');
   }
 });
 
-function P(text, opts={}) {
-  if (Array.isArray(text)) {
-    return new Paragraph({ children: text, ...opts });
+// Fetch all brand images as Uint8Arrays — needed by ImageRun
+// NOTE: fetch() of local files does NOT work when opening index.html via file:// in most browsers.
+// You must serve the folder via a tiny HTTP server (e.g. `python3 -m http.server 8000`)
+// when testing locally. On GitHub Pages this is served over https:// so it works fine.
+async function loadBrandImages() {
+  const out = {};
+  const failed = [];
+  for (const [key, path] of Object.entries(IMG_PATHS)) {
+    try {
+      const res = await fetch(path);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      out[key] = new Uint8Array(await res.arrayBuffer());
+    } catch (e) {
+      console.warn(`Could not load image ${path}: ${e.message}`);
+      out[key] = null;
+      failed.push(path);
+    }
   }
-  return new Paragraph({
-    children: [new TextRun({ text: text || "", ...opts.run })],
-    ...opts
-  });
+  if (failed.length) {
+    setStatus(`⚠ ${failed.length} image(s) missing — see console. Branded sections may be empty.`, 'error');
+  }
+  return out;
 }
 
-function H(text, level) {
-  return new Paragraph({
-    heading: level,
-    children: [new TextRun({ text, bold: true, color: GREEN })],
-    spacing: { before: 240, after: 120 }
-  });
-}
+// Default font: Segoe UI (matches original). docx-js applies it via run options.
+const FONT = "Segoe UI";
+const FONT_LIGHT = "Segoe UI Light";
+const FONT_SEMI  = "Segoe UI Semibold";
 
-function bulletPara(text, opts={}) {
-  // Returns a Paragraph with bullet-style numbering (we use a "bullets" reference defined in numbering config)
-  return new Paragraph({
-    numbering: { reference: "bullets", level: 0 },
-    children: parseInline(text),
-    spacing: { after: 60 }
-  });
-}
-
-// Parse **bold** inline markdown into TextRuns
-function parseInline(text) {
-  if (!text) return [new TextRun("")];
+// ---------- helpers ----------
+function parseInline(text, baseRun = {}) {
+  if (!text) return [new TextRun({ text: "", font: FONT, ...baseRun })];
   const parts = [];
   const regex = /\*\*([^*]+)\*\*/g;
   let lastIdx = 0;
   let m;
   while ((m = regex.exec(text)) !== null) {
-    if (m.index > lastIdx) parts.push(new TextRun(text.substring(lastIdx, m.index)));
-    parts.push(new TextRun({ text: m[1], bold: true }));
+    if (m.index > lastIdx) parts.push(new TextRun({ text: text.substring(lastIdx, m.index), font: FONT, ...baseRun }));
+    parts.push(new TextRun({ text: m[1], font: FONT, bold: true, ...baseRun }));
     lastIdx = regex.lastIndex;
   }
-  if (lastIdx < text.length) parts.push(new TextRun(text.substring(lastIdx)));
-  return parts.length ? parts : [new TextRun(text)];
+  if (lastIdx < text.length) parts.push(new TextRun({ text: text.substring(lastIdx), font: FONT, ...baseRun }));
+  return parts.length ? parts : [new TextRun({ text, font: FONT, ...baseRun })];
 }
 
-function splitLines(s) {
-  return (s || "").split(/\r?\n/).map(l => l.trim()).filter(l => l.length);
+function splitLines(s) { return (s || "").split(/\r?\n/).map(l => l.trim()).filter(l => l.length); }
+function splitParagraphs(s) { return (s || "").split(/\n\s*\n/).map(p => p.trim()).filter(p => p.length); }
+
+// Heading helper: navy colour, Segoe UI Light for big headings
+function H1(text) {
+  return new Paragraph({
+    heading: HeadingLevel.HEADING_1,
+    children: [new TextRun({ text, color: NAVY, font: FONT_LIGHT, size: 48 })],
+    spacing: { before: 240, after: 200 }
+  });
 }
-function splitParagraphs(s) {
-  return (s || "").split(/\n\s*\n/).map(p => p.trim()).filter(p => p.length);
+function H2(text) {
+  return new Paragraph({
+    heading: HeadingLevel.HEADING_2,
+    children: [new TextRun({ text, color: NAVY, font: FONT_SEMI, size: 28, bold: true })],
+    spacing: { before: 200, after: 100 }
+  });
 }
 
-// Build a generic data table
+function bulletPara(text, opts = {}) {
+  return new Paragraph({
+    numbering: { reference: "bullets", level: 0 },
+    children: parseInline(text, opts.run || {}),
+    spacing: { after: 60 }
+  });
+}
+
+// Build a generic data table with green header row
 function buildTable(headers, rows, columnWidths) {
-  // columnWidths in DXA — must sum to content width (9360 for US Letter 1" margins)
-  const totalWidth = columnWidths.reduce((a,b)=>a+b, 0);
+  const totalWidth = columnWidths.reduce((a, b) => a + b, 0);
   const headerRow = new TableRow({
     tableHeader: true,
     children: headers.map((h, i) => new TableCell({
       width: { size: columnWidths[i], type: WidthType.DXA },
-      shading: { fill: GREEN, type: ShadingType.CLEAR, color: "auto" },
+      shading: { fill: NAVY, type: ShadingType.CLEAR, color: "auto" },
       margins: { top: 80, bottom: 80, left: 120, right: 120 },
-      children: [new Paragraph({ children: [new TextRun({ text: h, bold: true, color: "FFFFFF" })] })]
+      children: [new Paragraph({ children: [new TextRun({ text: h, bold: true, color: "FFFFFF", font: FONT, size: 20 })] })]
     }))
   });
   const dataRows = rows.map(r => new TableRow({
@@ -745,8 +789,8 @@ function buildTable(headers, rows, columnWidths) {
       width: { size: columnWidths[i] || 2000, type: WidthType.DXA },
       margins: { top: 80, bottom: 80, left: 120, right: 120 },
       children: splitLines(c).length > 1
-        ? splitLines(c).map(line => new Paragraph({ children: parseInline(line) }))
-        : [new Paragraph({ children: parseInline(c) })]
+        ? splitLines(c).map(line => new Paragraph({ children: parseInline(line, { size: 20 }) }))
+        : [new Paragraph({ children: parseInline(c, { size: 20 }) })]
     }))
   }));
   return new Table({
@@ -757,14 +801,12 @@ function buildTable(headers, rows, columnWidths) {
   });
 }
 
-// Build schedule (gantt) table
 function buildSchedule(scheduleStr, totalWeeks) {
   const tw = parseInt(totalWeeks) || 8;
   const lines = splitLines(scheduleStr);
-  // First column = Phase, then weeks 1..N
-  const headers = ['Phase', ...Array.from({length: tw}, (_,i) => `W${i+1}`)];
-  const phaseColWidth = 4000;
-  const weekColWidth = Math.floor((9360 - phaseColWidth) / tw);
+  const headers = ['Phase', ...Array.from({ length: tw }, (_, i) => `W${i + 1}`)];
+  const phaseColWidth = 4400;
+  const weekColWidth = Math.floor((CONTENT_W - phaseColWidth) / tw);
   const colWidths = [phaseColWidth, ...Array(tw).fill(weekColWidth)];
   const rows = lines.map(line => {
     const [phase, weekList] = line.split('|').map(s => s.trim());
@@ -776,120 +818,231 @@ function buildSchedule(scheduleStr, totalWeeks) {
   return buildTable(headers, rows, colWidths);
 }
 
+// EMU conversion: 914400 EMU = 1 inch. docx-js ImageRun wants width/height in pixels.
+// At 96 DPI: 1 inch = 96 px. So 1440 DXA = 1 inch = 96 px.
+function dxaToPx(dxa) { return Math.round(dxa / 15); } // 1440/96 = 15
+
 // ---------- MAIN: generate the .docx ----------
 async function generateDoc() {
-  setStatus('Generating…', '');
+  setStatus('Loading brand assets…', '');
   try {
-    bindDocxLib(); // Resolve docx classes from window.docx now (clear error if CDN failed)
+    bindDocxLib();
     const d = collectData();
     if (!d.projectTitle || !d.clientName) {
       setStatus('Project Title and Client Name are required.', 'error');
       return;
     }
-    saveDraft(); // auto-save before generating
+    saveDraft();
+
+    const imgs = await loadBrandImages();
+    setStatus('Building document…', '');
+
+    // Helper: create an ImageRun if the image loaded, else return a placeholder Paragraph
+    const img = (key, w, h, opts = {}) => imgs[key]
+      ? new ImageRun({ data: imgs[key], transformation: { width: w, height: h }, ...opts,
+                       type: key === 'creatorsBg' || key === 'companyProfile' ? 'jpg' : 'png' })
+      : new TextRun("");
 
     const children = [];
 
     // ============ COVER PAGE ============
-    children.push(new Paragraph({ children: [new TextRun("")], spacing: { before: 2400 } }));
+    // Top-left: Clover logo (~1.6" wide)
     children.push(new Paragraph({
-      alignment: AlignmentType.CENTER,
-      children: [new TextRun({ text: d.projectTitle, bold: true, size: 48, color: GREEN })],
-      spacing: { after: 240 }
-    }));
-    children.push(new Paragraph({
-      alignment: AlignmentType.CENTER,
-      children: [new TextRun({ text: "for", size: 28 })],
-      spacing: { after: 240 }
-    }));
-    children.push(new Paragraph({
-      alignment: AlignmentType.CENTER,
-      children: [new TextRun({ text: d.clientName, bold: true, size: 36 })],
-      spacing: { after: 480 }
-    }));
-    children.push(new Paragraph({
-      alignment: AlignmentType.CENTER,
-      children: [new TextRun({ text: "BUSINESS PROPOSAL", bold: true, size: 32, color: GREEN })],
+      children: [img('cloverLogo', 145, 60)],
       spacing: { after: 720 }
     }));
+
+    // Big "BUSINESS" / "PROPOSAL" — Segoe UI Light/Semibold, navy
+    children.push(new Paragraph({
+      children: [new TextRun({ text: "BUSINESS", color: NAVY, font: FONT_LIGHT, size: 144 })], // 72pt
+      spacing: { after: 0 }
+    }));
+    children.push(new Paragraph({
+      children: [new TextRun({ text: "PROPOSAL", color: NAVY, font: FONT_SEMI, size: 144, bold: true })],
+      spacing: { after: 480 }
+    }));
+
+    // Project title + "for" + client name (smaller, navy)
+    children.push(new Paragraph({
+      children: [new TextRun({ text: d.projectTitle, color: NAVY, font: FONT, size: 32 })],
+      spacing: { after: 0 }
+    }));
+    children.push(new Paragraph({
+      children: [new TextRun({ text: "for", color: NAVY, font: FONT, size: 22 })],
+      spacing: { after: 0 }
+    }));
+    children.push(new Paragraph({
+      children: [new TextRun({ text: d.clientName, color: NAVY, font: FONT, size: 32 })],
+      spacing: { after: 480 }
+    }));
+
     if (d.docDate) {
       children.push(new Paragraph({
-        alignment: AlignmentType.CENTER,
-        children: [new TextRun({ text: d.docDate, size: 24 })],
-        spacing: { after: 480 }
+        children: [new TextRun({ text: d.docDate, color: GREY, font: FONT, size: 22 })],
+        spacing: { after: 240 }
       }));
     }
 
-    // Creators
+    // Spacer + cover sphere on its own line, right-aligned
+    children.push(new Paragraph({ children: [new TextRun("")], spacing: { before: 2400 } }));
     children.push(new Paragraph({
-      alignment: AlignmentType.CENTER,
-      children: [new TextRun({ text: "CREATORS", bold: true, size: 22, color: GREEN })],
-      spacing: { before: 480, after: 120 }
+      alignment: AlignmentType.RIGHT,
+      children: [img('coverSphere', 240, 240)]
     }));
+    children.push(new Paragraph({ children: [new PageBreak()] }));
+
+    // ============ CREATORS PAGE ============
+    children.push(new Paragraph({
+      children: [new TextRun({ text: "CREATORS", color: GREY, font: FONT_SEMI, size: 24, bold: true })],
+      spacing: { after: 60 }
+    }));
+    // Yellow accent underline (a thin paragraph with bottom border)
+    children.push(new Paragraph({
+      border: { bottom: { style: BorderStyle.SINGLE, size: 18, color: ACCENT_YELLOW, space: 1 } },
+      children: [new TextRun({ text: "", size: 8 })],
+      spacing: { after: 360 }
+    }));
+
     d.creators.forEach(c => {
       if (c[0]) {
-        children.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: c[0], bold: true, size: 24 })] }));
-        if (c[1]) children.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: c[1], size: 22 })] }));
-        if (c[2]) children.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: c[2], size: 20, color: "0563C1", italics: true })] }));
-        children.push(new Paragraph({ children: [new TextRun("")] }));
+        children.push(new Paragraph({
+          children: [new TextRun({ text: c[0], color: NAVY, font: FONT_SEMI, size: 32, bold: true })],
+          spacing: { after: 0 }
+        }));
+        if (c[1]) children.push(new Paragraph({
+          children: [new TextRun({ text: c[1], color: NAVY, font: FONT, size: 22 })],
+          spacing: { after: 0 }
+        }));
+        if (c[2]) children.push(new Paragraph({
+          children: [new TextRun({ text: c[2], color: "0563C1", font: FONT, size: 22, underline: {} })],
+          spacing: { after: 240 }
+        }));
       }
     });
+
+    // Sculpture image fills the lower portion of the page
+    children.push(new Paragraph({ children: [new TextRun("")], spacing: { before: 1200 } }));
+    children.push(new Paragraph({
+      alignment: AlignmentType.CENTER,
+      children: [img('creatorsBg', 600, 480)]
+    }));
     children.push(new Paragraph({ children: [new PageBreak()] }));
 
-    // ============ IP / CONFIDENTIALITY ============
-    children.push(H("Intellectual Property / Confidentiality Statement", HeadingLevel.HEADING_1));
+    // ============ IP / CONFIDENTIALITY PAGE ============
+    children.push(new Paragraph({
+      children: [new TextRun({ text: "Intellectual Property/", color: NAVY, font: FONT_LIGHT, size: 56 })],
+      spacing: { after: 0 }
+    }));
+    children.push(new Paragraph({
+      children: [new TextRun({ text: "Confidentiality Statement", color: NAVY, font: FONT_LIGHT, size: 56 })],
+      spacing: { after: 480 }
+    }));
     CONSTANT_TC.ipStatement(d.clientName).forEach(p => {
-      children.push(new Paragraph({ children: parseInline(p), spacing: { after: 120 } }));
+      children.push(new Paragraph({
+        children: parseInline(p, { size: 20 }),
+        alignment: AlignmentType.JUSTIFIED,
+        spacing: { after: 180 }
+      }));
     });
     const addr = CONSTANT_TC.cloverAddress;
-    children.push(new Paragraph({ children: [new TextRun({ text: addr.name, bold: true })], spacing: { before: 240 } }));
+    children.push(new Paragraph({ children: [new TextRun({ text: addr.name, font: FONT, size: 20 })], spacing: { before: 360 } }));
     [addr.line1, addr.line2, addr.line3, addr.phone, addr.web].forEach(l => {
-      children.push(new Paragraph({ children: [new TextRun(l)] }));
+      children.push(new Paragraph({ children: [new TextRun({ text: l, font: FONT, size: 20 })] }));
     });
     children.push(new Paragraph({ children: [new PageBreak()] }));
 
+    // ============ INDEX (text-only, since docx-js TOC field is fragile in browsers) ============
+    children.push(new Paragraph({
+      children: [new TextRun({ text: "Index", color: NAVY, font: FONT_LIGHT, size: 56 })],
+      spacing: { after: 480 }
+    }));
+    const tocItems = [
+      "1.  Executive Summary",
+      "2.  Background",
+      "    2.1.  Requirement Background",
+      "    2.2.  Understanding of Scope",
+      "3.  Technical Proposal",
+      "    3.1.  Proposed Solution",
+      "    3.2.  Scope of Work (SOW)",
+      "    3.3.  Deliverables",
+      "    3.4.  Team Composition",
+      "    3.5.  Skills Matrix",
+      "    3.6.  Escalation Matrix",
+      "    3.7.  Approach Methodology",
+      "    3.8.  Schedule",
+      "    3.9.  Pre-requisites",
+      "    3.10. Key Assumptions",
+      "    3.11. Service Exclusions",
+      "4.  Commercials",
+      "    4.1.  Terms & Conditions for Payments",
+      "5.  General Terms & Conditions"
+    ];
+    tocItems.forEach(t => children.push(new Paragraph({
+      children: [new TextRun({ text: t, font: FONT, size: 22 })],
+      spacing: { after: 60 }
+    })));
+    children.push(new Paragraph({ children: [new PageBreak()] }));
+
+    // ============ COMPANY PROFILE — full-page brand image ============
+    // Sized to fit within A4 content area (10.33" tall × 7.18" wide @ 96 DPI = 991 × 689 px)
+    // — slightly under to avoid overflow / blank trailing page
+    if (imgs.companyProfile) {
+      children.push(new Paragraph({
+        alignment: AlignmentType.CENTER,
+        children: [new ImageRun({ data: imgs.companyProfile, transformation: { width: 690, height: 970 }, type: 'jpg' })],
+        spacing: { before: 0, after: 0 }
+      }));
+      // No explicit PageBreak — the image fills the page, next content naturally flows to next page
+    }
+
     // ============ EXECUTIVE SUMMARY ============
-    children.push(H("1. Executive Summary", HeadingLevel.HEADING_1));
+    children.push(H1("Executive Summary"));
     splitParagraphs(d.execSummary).forEach(p => {
-      children.push(new Paragraph({ children: parseInline(p), spacing: { after: 120 } }));
+      children.push(new Paragraph({ children: parseInline(p, { size: 22 }), spacing: { after: 160 } }));
     });
 
     // ============ BACKGROUND ============
-    children.push(H("2. Background", HeadingLevel.HEADING_1));
-    children.push(H("2.1 Requirement Background", HeadingLevel.HEADING_2));
+    children.push(H1("Background"));
+    children.push(H2("2.1 Requirement Background"));
     splitParagraphs(d.reqBackground).forEach(p => {
-      children.push(new Paragraph({ children: parseInline(p), spacing: { after: 120 } }));
+      children.push(new Paragraph({ children: parseInline(p, { size: 22 }), spacing: { after: 160 } }));
     });
-    children.push(H("2.2 Understanding of Scope", HeadingLevel.HEADING_2));
-    if (d.scopeIntro) children.push(new Paragraph({ children: parseInline(d.scopeIntro), spacing: { after: 120 } }));
+    children.push(H2("2.2 Understanding of Scope"));
+    if (d.scopeIntro) children.push(new Paragraph({ children: parseInline(d.scopeIntro, { size: 22 }), spacing: { after: 120 } }));
     if (d.currentInventory.length) {
       children.push(buildTable(
         ['Component / Service', 'Image / Repo', 'Type', 'Note'],
         d.currentInventory,
-        [2200, 2800, 1200, 3160]
+        [2400, 3100, 1200, 3636]
       ));
       children.push(new Paragraph({ children: [new TextRun("")] }));
     }
     if (d.targetInventory.length) {
-      children.push(new Paragraph({ children: [new TextRun({ text: "This will be migrated to following components:", italics: true })], spacing: { before: 120, after: 120 } }));
+      children.push(new Paragraph({
+        children: [new TextRun({ text: "This will be migrated to following components:", italics: true, font: FONT, size: 22 })],
+        spacing: { before: 120, after: 120 }
+      }));
       children.push(buildTable(
         ['Component / Service', 'Image / Repo', 'Type', 'New Version'],
         d.targetInventory,
-        [2200, 3200, 1200, 2760]
+        [2400, 3500, 1200, 3236]
       ));
       children.push(new Paragraph({ children: [new TextRun("")] }));
     }
 
     // ============ TECHNICAL PROPOSAL ============
-    children.push(H("3. Technical Proposal", HeadingLevel.HEADING_1));
-    children.push(H("3.1 Proposed Solution", HeadingLevel.HEADING_2));
-    if (d.solutionIntro) children.push(new Paragraph({ children: parseInline(d.solutionIntro), spacing: { after: 120 } }));
+    children.push(H1("Technical Proposal"));
+    children.push(H2("3.1 Proposed Solution"));
+    if (d.solutionIntro) children.push(new Paragraph({ children: parseInline(d.solutionIntro, { size: 22 }), spacing: { after: 120 } }));
     if (d.solutionBullets) {
-      children.push(new Paragraph({ children: [new TextRun({ text: "The solution includes:", italics: true })], spacing: { after: 60 } }));
-      splitLines(d.solutionBullets).forEach(b => children.push(bulletPara(b)));
+      children.push(new Paragraph({
+        children: [new TextRun({ text: "The solution includes:", italics: true, font: FONT, size: 22 })],
+        spacing: { after: 60 }
+      }));
+      splitLines(d.solutionBullets).forEach(b => children.push(bulletPara(b, { run: { size: 22 } })));
     }
 
-    children.push(H("3.2 Scope of Work (SOW)", HeadingLevel.HEADING_2));
+    children.push(H2("3.2 Scope of Work (SOW)"));
     children.push(buildTable(
       ['Item', 'Detail'],
       [
@@ -899,170 +1052,174 @@ async function generateDoc() {
         ['Support Methodology', d.sowSupport],
         ['Project Duration', d.sowDuration]
       ],
-      [3000, 6360]
+      [3000, 7336]
     ));
     children.push(new Paragraph({ children: [new TextRun("")] }));
 
-    children.push(H("3.3 Deliverables", HeadingLevel.HEADING_2));
-    splitLines(d.deliverables).forEach(b => children.push(bulletPara(b)));
+    children.push(H2("3.3 Deliverables"));
+    splitLines(d.deliverables).forEach(b => children.push(bulletPara(b, { run: { size: 22 } })));
 
-    children.push(H("3.4 Team Composition", HeadingLevel.HEADING_2));
-    splitLines(d.teamComp).forEach(t => children.push(bulletPara(t)));
+    children.push(H2("3.4 Team Composition"));
+    splitLines(d.teamComp).forEach(t => children.push(bulletPara(t, { run: { size: 22 } })));
 
-    children.push(H("3.5 Skills Matrix", HeadingLevel.HEADING_2));
-    splitLines(d.skillsMatrix).forEach(s => children.push(bulletPara(s)));
+    children.push(H2("3.5 Skills Matrix"));
+    splitLines(d.skillsMatrix).forEach(s => children.push(bulletPara(s, { run: { size: 22 } })));
 
-    children.push(H("3.6 Escalation Matrix", HeadingLevel.HEADING_2));
+    children.push(H2("3.6 Escalation Matrix"));
     if (d.escalationTable.length) {
       children.push(buildTable(
         ['Level', 'Name', 'Phone', 'Email'],
         d.escalationTable,
-        [1500, 2500, 2000, 3360]
+        [1500, 2800, 2200, 3836]
       ));
       children.push(new Paragraph({ children: [new TextRun("")] }));
     }
 
-    children.push(H("3.7 Approach Methodology", HeadingLevel.HEADING_2));
+    children.push(H2("3.7 Approach Methodology"));
     if (d.approachTable.length) {
       children.push(buildTable(
         ['Sr.', 'Module / Activity', 'Duration', 'Description'],
         d.approachTable,
-        [600, 2800, 1200, 4760]
+        [600, 3000, 1400, 5336]
       ));
       children.push(new Paragraph({ children: [new TextRun("")] }));
     }
 
-    children.push(H("3.8 Schedule", HeadingLevel.HEADING_2));
+    children.push(H2("3.8 Schedule"));
     if (d.scheduleData) {
       children.push(buildSchedule(d.scheduleData, d.totalWeeks));
       children.push(new Paragraph({ children: [new TextRun("")] }));
     }
 
     if (d.commTable.length) {
-      children.push(H("3.9 Communication Methodology", HeadingLevel.HEADING_2));
-      children.push(buildTable(['Item', 'Participants', 'Purpose'], d.commTable, [3000, 3000, 3360]));
+      children.push(H2("3.9 Communication Methodology"));
+      children.push(buildTable(['Item', 'Participants', 'Purpose'], d.commTable, [3000, 3500, 3836]));
       children.push(new Paragraph({ children: [new TextRun("")] }));
     }
     if (d.govTable.length) {
-      children.push(H("3.10 Governance Methodology", HeadingLevel.HEADING_2));
-      children.push(buildTable(['Item', 'Participants', 'Purpose'], d.govTable, [3000, 3000, 3360]));
+      children.push(H2("3.10 Governance Methodology"));
+      children.push(buildTable(['Item', 'Participants', 'Purpose'], d.govTable, [3000, 3500, 3836]));
       children.push(new Paragraph({ children: [new TextRun("")] }));
     }
 
-    children.push(H("3.11 Pre-requisites", HeadingLevel.HEADING_2));
-    splitLines(d.prereqs).forEach(b => children.push(bulletPara(b)));
+    children.push(H2("3.11 Pre-requisites"));
+    splitLines(d.prereqs).forEach(b => children.push(bulletPara(b, { run: { size: 22 } })));
 
-    children.push(H("3.12 Key Assumptions", HeadingLevel.HEADING_2));
-    splitLines(d.assumptions).forEach(b => children.push(bulletPara(b)));
+    children.push(H2("3.12 Key Assumptions"));
+    splitLines(d.assumptions).forEach(b => children.push(bulletPara(b, { run: { size: 22 } })));
 
-    children.push(H("3.13 Service Exclusions", HeadingLevel.HEADING_2));
-    splitLines(d.exclusions).forEach(b => children.push(bulletPara(b)));
+    children.push(H2("3.13 Service Exclusions"));
+    splitLines(d.exclusions).forEach(b => children.push(bulletPara(b, { run: { size: 22 } })));
 
     // ============ COMMERCIALS ============
     children.push(new Paragraph({ children: [new PageBreak()] }));
-    children.push(H("4. Commercials", HeadingLevel.HEADING_1));
+    children.push(H1("Commercials"));
     const totalNum = parseFloat(d.totalAmount) || 0;
     const totalFmt = "INR " + totalNum.toLocaleString('en-IN') + "/-";
     children.push(buildTable(
       ['S. No.', 'Engagement Model', 'Total Charges'],
       [['1', d.engModel, totalFmt]],
-      [1000, 5360, 3000]
+      [1000, 6336, 3000]
     ));
     children.push(new Paragraph({ children: [new TextRun("")] }));
 
-    // Milestones
     if (d.milestoneTable.length) {
       const milestoneRows = d.milestoneTable.map(([desc, pct]) => {
         const p = parseFloat(pct) || 0;
         const amt = "₹ " + Math.round(totalNum * p / 100).toLocaleString('en-IN');
         return [desc, p + "%", amt];
       });
-      const totalPct = d.milestoneTable.reduce((sum, [_,p]) => sum + (parseFloat(p)||0), 0);
-      milestoneRows.push(['', totalPct + "%", "₹ " + totalNum.toLocaleString('en-IN')]);
-      children.push(buildTable(['Payment Milestone', '% of Total Cost', 'Amount'], milestoneRows, [5360, 2000, 2000]));
+      const totalPct = d.milestoneTable.reduce((sum, [_, p]) => sum + (parseFloat(p) || 0), 0);
+      milestoneRows.push(['Total', totalPct + "%", "₹ " + totalNum.toLocaleString('en-IN')]);
+      children.push(buildTable(['Payment Milestone', '% of Total Cost', 'Amount'], milestoneRows, [6336, 2000, 2000]));
       children.push(new Paragraph({ children: [new TextRun("")] }));
     }
 
-    // ============ PAYMENT T&C (constant) ============
-    children.push(H("4.1 Terms & Conditions for Payments", HeadingLevel.HEADING_2));
-    CONSTANT_TC.paymentTerms.forEach(t => children.push(bulletPara(t)));
+    children.push(H2("4.1 Terms & Conditions for Payments"));
+    CONSTANT_TC.paymentTerms.forEach(t => children.push(bulletPara(t, { run: { size: 22 } })));
 
-    // GST table
     children.push(new Paragraph({ children: [new TextRun("")], spacing: { before: 120 } }));
-    children.push(buildTable(
-      ['Field', 'Value'],
-      CONSTANT_TC.gstInfo,
-      [3000, 6360]
-    ));
+    children.push(buildTable(['Field', 'Value'], CONSTANT_TC.gstInfo, [3000, 7336]));
     children.push(new Paragraph({ children: [new TextRun("")] }));
 
-    // ============ GENERAL T&C (constant) ============
+    // ============ GENERAL T&C ============
     children.push(new Paragraph({ children: [new PageBreak()] }));
-    children.push(H("5. General Terms & Conditions", HeadingLevel.HEADING_1));
+    children.push(H1("General Terms & Conditions"));
     CONSTANT_TC.generalTC.forEach((tc, i) => {
       children.push(new Paragraph({
-        children: [new TextRun({ text: `${i+1}. ${tc.title}: `, bold: true }), new TextRun(tc.body)],
-        spacing: { after: 120 }
+        children: [
+          new TextRun({ text: `${i + 1}. ${tc.title}: `, bold: true, font: FONT, size: 22, color: NAVY }),
+          ...parseInline(tc.body, { size: 22 })
+        ],
+        alignment: AlignmentType.JUSTIFIED,
+        spacing: { after: 160 }
       }));
     });
+
+    // ============ FOOTER (with project title left, page X of Y center, "Clover Infotech Private Limited" right) ============
+    const footerPara = new Paragraph({
+      tabStops: [
+        { type: 'center', position: Math.floor(CONTENT_W / 2) },
+        { type: 'right',  position: CONTENT_W }
+      ],
+      children: [
+        new TextRun({ text: `${d.projectTitle}`, color: GREY, font: FONT, size: 16 }),
+        new TextRun({ text: "\n" + (d.clientName || ""), color: GREY, font: FONT, size: 16 }),
+        new TextRun({ children: ["\t"], color: GREY, font: FONT, size: 16 }),
+        new TextRun({ children: [PageNumber.CURRENT], color: GREY, font: FONT, size: 16 }),
+        new TextRun({ children: ["\t"], color: GREY, font: FONT, size: 16 }),
+        new TextRun({ text: "Clover Infotech Private Limited", color: GREY, font: FONT, size: 16 })
+      ]
+    });
+
+    // Footer image (small wireframe accent on right)
+    const footerImgPara = imgs.footerAccent
+      ? new Paragraph({
+          alignment: AlignmentType.RIGHT,
+          children: [new ImageRun({ data: imgs.footerAccent, transformation: { width: 130, height: 30 }, type: 'png' })]
+        })
+      : new Paragraph({ children: [new TextRun("")] });
 
     // ============ BUILD DOCUMENT ============
     const doc = new Document({
       creator: "Clover Infotech",
       title: d.projectTitle,
       styles: {
-        default: { document: { run: { font: "Calibri", size: 22 } } }, // 11pt
+        default: { document: { run: { font: FONT, size: 22 } } }, // 11pt body
         paragraphStyles: [
           { id: "Heading1", name: "Heading 1", basedOn: "Normal", next: "Normal", quickFormat: true,
-            run: { size: 32, bold: true, color: GREEN, font: "Calibri" },
-            paragraph: { spacing: { before: 240, after: 120 }, outlineLevel: 0 } },
+            run: { size: 48, color: NAVY, font: FONT_LIGHT },
+            paragraph: { spacing: { before: 240, after: 200 }, outlineLevel: 0 } },
           { id: "Heading2", name: "Heading 2", basedOn: "Normal", next: "Normal", quickFormat: true,
-            run: { size: 26, bold: true, color: GREEN, font: "Calibri" },
-            paragraph: { spacing: { before: 180, after: 80 }, outlineLevel: 1 } }
+            run: { size: 28, bold: true, color: NAVY, font: FONT_SEMI },
+            paragraph: { spacing: { before: 200, after: 100 }, outlineLevel: 1 } }
         ]
       },
       numbering: {
         config: [{
           reference: "bullets",
           levels: [{ level: 0, format: LevelFormat.BULLET, text: "•", alignment: AlignmentType.LEFT,
-            style: { paragraph: { indent: { left: 720, hanging: 360 } } } }]
+                     style: { paragraph: { indent: { left: 540, hanging: 270 } } } }]
         }]
       },
       sections: [{
         properties: {
           page: {
-            size: { width: 12240, height: 15840 },
-            margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 }
+            size: { width: PAGE_W, height: PAGE_H },
+            margin: MARGIN
           }
         },
-        headers: {
-          default: new Header({
-            children: [new Paragraph({
-              alignment: AlignmentType.RIGHT,
-              children: [new TextRun({ text: "Clover Infotech Private Limited", color: GREEN, size: 18, bold: true })]
-            })]
-          })
-        },
         footers: {
-          default: new Footer({
-            children: [new Paragraph({
-              alignment: AlignmentType.CENTER,
-              children: [
-                new TextRun({ text: `${d.projectTitle} | ${d.clientName} | Page `, size: 18 }),
-                new TextRun({ children: [PageNumber.CURRENT], size: 18 }),
-                new TextRun({ text: " of ", size: 18 }),
-                new TextRun({ children: [PageNumber.TOTAL_PAGES], size: 18 })
-              ]
-            })]
-          })
+          default: new Footer({ children: [footerPara, footerImgPara] })
         },
         children
       }]
     });
 
+    setStatus('Packing…', '');
     const blob = await Packer.toBlob(doc);
     const safeName = (d.clientShort || d.clientName || 'Proposal').replace(/[^a-zA-Z0-9_-]/g, '_');
-    const fname = `${safeName}_${d.projectTitle.replace(/[^a-zA-Z0-9_-]/g,'_').substring(0,40)}_Proposal.docx`;
+    const fname = `${safeName}_${d.projectTitle.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 40)}_Proposal.docx`;
     saveAs(blob, fname);
     setStatus(`✅ Generated: ${fname}`, 'success');
   } catch (err) {
