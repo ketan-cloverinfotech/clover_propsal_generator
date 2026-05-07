@@ -1,0 +1,15 @@
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Node (in case you ever do local tooling)
+node_modules/
+package-lock.json
+npm-debug.log*
+
+# Logs / temp
+*.log
+*.tmp

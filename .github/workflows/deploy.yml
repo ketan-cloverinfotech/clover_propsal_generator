@@ -1,0 +1,66 @@
+name: Deploy proposal generator to GitHub Pages
+
+# When to run this workflow
+on:
+  # Auto-deploy on every push to main
+  push:
+    branches: [main]
+  # Allow manual run from the Actions tab
+  workflow_dispatch:
+
+# Permissions required by the GitHub Pages deploy actions
+permissions:
+  contents: read    # to checkout the repo
+  pages: write      # to publish to Pages
+  id-token: write   # to authenticate the OIDC token used by deploy-pages
+
+# Allow only one concurrent deployment per branch — queue, don't cancel,
+# so a production deploy in progress is never killed mid-flight.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+
+    # Bind this job to the github-pages environment so deploy-pages can publish.
+    # The deployment URL appears as a clickable link in the Actions UI once it's done.
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      # 1. Pull the repo content into the runner
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      # 2. Fail fast if any required file is missing — saves you from publishing a broken site
+      - name: Sanity check required files
+        run: |
+          set -e
+          for f in index.html lib/docx.umd.js lib/FileSaver.min.js .nojekyll; do
+            if [ ! -f "$f" ]; then
+              echo "::error file=$f::Required file missing: $f"
+              exit 1
+            fi
+          done
+          echo "✅ All required files present."
+          echo "📦 Repo size: $(du -sh . | cut -f1)"
+
+      # 3. Tell GitHub Pages we want to publish from this repo
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      # 4. Tarball the whole repo (minus .git) and hand it to Pages.
+      #    path: '.' = upload everything from repo root.
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+
+      # 5. Tell Pages to serve that artifact
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
